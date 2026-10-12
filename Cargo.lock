@@ -243,6 +243,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "artcraft-canvas"
+version = "0.2.1"
+
+[[package]]
 name = "as-raw-xcb-connection"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4911,6 +4915,7 @@ dependencies = [
 name = "vectorcraft-ui-egui"
 version = "0.9.0"
 dependencies = [
+ "artcraft-canvas",
  "craft-ui",
  "egui",
  "egui_extras",

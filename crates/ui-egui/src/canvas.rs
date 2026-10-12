@@ -151,6 +151,12 @@ pub fn fit(app: &mut VectorcraftApp, how: &str) {
 }
 
 pub fn show(app: &mut VectorcraftApp, ui: &mut Ui) {
+    crate::shared_canvas::enter(app, ui.ctx().pixels_per_point());
+    show_native(app, ui);
+    crate::shared_canvas::leave(app, ui.ctx().pixels_per_point());
+}
+
+fn show_native(app: &mut VectorcraftApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
     let full = ui.available_rect_before_wrap();
     // A document that opened, closed or became active since Home was chosen replaces it.
@@ -228,124 +234,130 @@ pub fn show(app: &mut VectorcraftApp, ui: &mut Ui) {
     }
 
     // Artwork raster.
-    let ppp = ui.ctx().pixels_per_point();
-    let (w, h) = ((rect.width() * ppp).round().max(1.0) as u32, (rect.height() * ppp).round().max(1.0) as u32);
-    // View › Pixel Preview: the art as it rasterizes, one pixel per point, while a document pixel
-    // is bigger than a screen pixel (below that the screen render already shows it).
-    let pixel = (app.ui.view.pixel_preview && v.zoom * ppp as f64 > 1.0).then(|| pixel_region(&xf)).flatten();
-    // File Handling › Display Bitmaps as Anti-aliased Images in Pixel Preview: off, images show
-    // their pixels as they rasterize, hard-edged.
-    let smooth_images = pixel.is_none() || app.session.prefs.anti_aliased_bitmaps;
-    let key = CacheKey {
-        doc: st.uid as usize,
-        revision: st.revision,
-        zoom: v.zoom,
-        cx: v.center.x,
-        cy: v.center.y,
-        w,
-        h,
-        outline: app.ui.view.outline,
-        trim: app.ui.view.trim_view,
-        ppp,
-        hidden: vec![],
-        rot: v.rotation,
-        anti_alias: app.session.prefs.anti_aliased_artwork,
-        placed: vectorcraft_render::placed_document::generation(),
-        pixel,
-        smooth_images,
-        isolated: st.isolation.map(|id| id.0),
-    };
-    // Placed documents' bitmaps are being made: draw again when they are ready.
-    if vectorcraft_render::placed_document::busy() {
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(30));
-    }
-    if !app.canvas.worker_started {
-        app.canvas.worker_started = true;
-        if std::env::var_os("VECTORCRAFT_SYNC_RENDER").is_none() {
-            app.canvas.worker = crate::render_worker::Worker::spawn(ui.ctx().clone());
-        }
-    }
-    // Upload finished background renders.
-    if let Some(done) = app.canvas.worker.as_mut().and_then(|w| w.poll())
-        && done.key.doc == key.doc
-    {
-        upload(app, ui.ctx(), &done.img, done.key.pixel.is_some());
-        app.canvas.key = Some(done.key);
-        app.perf.render_ms = done.ms;
-        app.canvas.last_ms = done.ms;
-    }
-    if app.canvas.key.as_ref() != Some(&key) || app.canvas.texture.is_none() {
-        let (w, h, view) = match pixel {
-            Some([x0, y0, x1, y1]) => ((x1 - x0) as u32, (y1 - y0) as u32, Affine::translate((-x0 as f64, -y0 as f64))),
-            None => (
-                w,
-                h,
-                Affine::translate((w as f64 / 2.0, h as f64 / 2.0))
-                    * Affine::rotate(v.rotation.to_radians())
-                    * Affine::scale(v.zoom * ppp as f64)
-                    * Affine::translate(-v.center.to_vec2()),
-            ),
-        };
-        let opts = vectorcraft_render::RenderOptions { outline: app.ui.view.outline, background: None, artboards: false, ..Default::default() };
-        let opts = vectorcraft_render::RenderOptions {
-            proof: vectorcraft_render::proof::active_proof(),
-            overprint_preview: vectorcraft_render::proof::overprint_preview_on(),
+    if !crate::shared_canvas::paint(app, &painter, &xf) {
+        let ppp = ui.ctx().pixels_per_point();
+        let (w, h) = ((rect.width() * ppp).round().max(1.0) as u32, (rect.height() * ppp).round().max(1.0) as u32);
+        // View › Pixel Preview: the art as it rasterizes, one pixel per point, while a document pixel
+        // is bigger than a screen pixel (below that the screen render already shows it).
+        let pixel = (app.ui.view.pixel_preview && v.zoom * ppp as f64 > 1.0).then(|| pixel_region(&xf)).flatten();
+        // File Handling › Display Bitmaps as Anti-aliased Images in Pixel Preview: off, images show
+        // their pixels as they rasterize, hard-edged.
+        let smooth_images = pixel.is_none() || app.session.prefs.anti_aliased_bitmaps;
+        let key = CacheKey {
+            doc: st.uid as usize,
+            revision: st.revision,
+            zoom: v.zoom,
+            cx: v.center.x,
+            cy: v.center.y,
+            w,
+            h,
+            outline: app.ui.view.outline,
             trim: app.ui.view.trim_view,
-            tile_edge: vectorcraft_color::Color::from_hex(&app.session.prefs.pattern_tile_edge_color).map_or(opts.tile_edge, |c| {
-                let [r, g, b, _] = c.to_rgba8(1.0);
-                [r, g, b]
-            }),
-            mask_view,
-            highlight_substitutions: true,
-            // General › Anti-aliased Artwork: off, edges are hard on screen (raster effects and
-            // pattern tiles stay smooth), as in Illustrator.
-            anti_alias: if app.session.prefs.anti_aliased_artwork { vectorcraft_render::AntiAlias::Art } else { vectorcraft_render::AntiAlias::None },
-            progressive_placed: true,
-            trace_views: true,
+            ppp,
+            hidden: vec![],
+            rot: v.rotation,
+            anti_alias: app.session.prefs.anti_aliased_artwork,
+            placed: vectorcraft_render::placed_document::generation(),
+            pixel,
             smooth_images,
-            // Isolation mode: the art around the isolated group or layer is dimmed (#833).
-            isolated: key.isolated.map(vectorcraft_doc::NodeId),
-            ..opts
+            isolated: st.isolation.map(|id| id.0),
         };
-        // Light documents render synchronously (no lag vs overlays); heavy ones go to the worker.
-        // A document switch renders synchronously so another document's frame is never shown.
-        let same_doc = app.canvas.key.as_ref().is_some_and(|k| k.doc == key.doc);
-        let heavy = app.canvas.last_ms > 8.0 && app.canvas.texture.is_some() && same_doc;
-        match (&mut app.canvas.worker, heavy) {
-            (Some(worker), true) => worker.submit(crate::render_worker::Job { key: key.clone(), doc: doc.clone(), w, h, view, opts }),
-            _ => {
-                let t0 = now_ms();
-                let img = app.canvas.renderer.render(&doc, w, h, view, &opts);
-                upload(app, ui.ctx(), &img, pixel.is_some());
-                app.canvas.key = Some(key.clone());
-                app.perf.render_ms = now_ms() - t0;
-                app.canvas.last_ms = app.perf.render_ms;
+        // Placed documents' bitmaps are being made: draw again when they are ready.
+        if vectorcraft_render::placed_document::busy() {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(30));
+        }
+        if !app.canvas.worker_started {
+            app.canvas.worker_started = true;
+            if std::env::var_os("VECTORCRAFT_SYNC_RENDER").is_none() {
+                app.canvas.worker = crate::render_worker::Worker::spawn(ui.ctx().clone());
             }
         }
-    }
-    if let (Some(tex), Some(k)) = (&app.canvas.texture, &app.canvas.key)
-        && k.doc == key.doc
-    {
-        match k.pixel {
-            // Document pixels: placed over the document rect they cover, turning with the view.
-            Some([x0, y0, x1, y1]) => {
-                let q = xf.quad(Rect::new(x0 as f64, y0 as f64, x1 as f64, y1 as f64));
-                let mut mesh = egui::Mesh::with_texture(tex.id());
-                for (pos, uv) in q.into_iter().zip([pos2(0.0, 0.0), pos2(1.0, 0.0), pos2(1.0, 1.0), pos2(0.0, 1.0)]) {
-                    mesh.vertices.push(egui::epaint::Vertex { pos, uv, color: Color32::WHITE });
+        // Upload finished background renders.
+        if let Some(done) = app.canvas.worker.as_mut().and_then(|w| w.poll())
+            && done.key.doc == key.doc
+        {
+            upload(app, ui.ctx(), &done.img, done.key.pixel.is_some());
+            app.canvas.key = Some(done.key);
+            app.perf.render_ms = done.ms;
+            app.canvas.last_ms = done.ms;
+        }
+        if app.canvas.key.as_ref() != Some(&key) || app.canvas.texture.is_none() {
+            let (w, h, view) = match pixel {
+                Some([x0, y0, x1, y1]) => ((x1 - x0) as u32, (y1 - y0) as u32, Affine::translate((-x0 as f64, -y0 as f64))),
+                None => (
+                    w,
+                    h,
+                    Affine::translate((w as f64 / 2.0, h as f64 / 2.0))
+                        * Affine::rotate(v.rotation.to_radians())
+                        * Affine::scale(v.zoom * ppp as f64)
+                        * Affine::translate(-v.center.to_vec2()),
+                ),
+            };
+            let opts = vectorcraft_render::RenderOptions { outline: app.ui.view.outline, background: None, artboards: false, ..Default::default() };
+            let opts = vectorcraft_render::RenderOptions {
+                proof: vectorcraft_render::proof::active_proof(),
+                overprint_preview: vectorcraft_render::proof::overprint_preview_on(),
+                trim: app.ui.view.trim_view,
+                tile_edge: vectorcraft_color::Color::from_hex(&app.session.prefs.pattern_tile_edge_color).map_or(opts.tile_edge, |c| {
+                    let [r, g, b, _] = c.to_rgba8(1.0);
+                    [r, g, b]
+                }),
+                mask_view,
+                highlight_substitutions: true,
+                // General › Anti-aliased Artwork: off, edges are hard on screen (raster effects and
+                // pattern tiles stay smooth), as in Illustrator.
+                anti_alias: if app.session.prefs.anti_aliased_artwork {
+                    vectorcraft_render::AntiAlias::Art
+                } else {
+                    vectorcraft_render::AntiAlias::None
+                },
+                progressive_placed: true,
+                trace_views: true,
+                smooth_images,
+                // Isolation mode: the art around the isolated group or layer is dimmed (#833).
+                isolated: key.isolated.map(vectorcraft_doc::NodeId),
+                ..opts
+            };
+            // Light documents render synchronously (no lag vs overlays); heavy ones go to the worker.
+            // A document switch renders synchronously so another document's frame is never shown.
+            let same_doc = app.canvas.key.as_ref().is_some_and(|k| k.doc == key.doc);
+            let heavy = app.canvas.last_ms > 8.0 && app.canvas.texture.is_some() && same_doc;
+            match (&mut app.canvas.worker, heavy) {
+                (Some(worker), true) => worker.submit(crate::render_worker::Job { key: key.clone(), doc: doc.clone(), w, h, view, opts }),
+                _ => {
+                    let t0 = now_ms();
+                    let img = app.canvas.renderer.render(&doc, w, h, view, &opts);
+                    upload(app, ui.ctx(), &img, pixel.is_some());
+                    app.canvas.key = Some(key.clone());
+                    app.perf.render_ms = now_ms() - t0;
+                    app.canvas.last_ms = app.perf.render_ms;
                 }
-                mesh.add_triangle(0, 1, 2);
-                mesh.add_triangle(0, 2, 3);
-                painter.add(Shape::mesh(mesh));
             }
-            None if (k.rot - v.rotation).abs() < 1e-9 => {
-                // Reproject the last frame if it was rendered for a different view.
-                let old = Xf { rect, zoom: k.zoom, center: Point::new(k.cx, k.cy), rot: xf.rot };
-                let a = xf.to_screen(old.to_doc(rect.min));
-                let b = xf.to_screen(old.to_doc(rect.max));
-                painter.image(tex.id(), egui::Rect::from_min_max(a, b), egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        }
+        if let (Some(tex), Some(k)) = (&app.canvas.texture, &app.canvas.key)
+            && k.doc == key.doc
+        {
+            match k.pixel {
+                // Document pixels: placed over the document rect they cover, turning with the view.
+                Some([x0, y0, x1, y1]) => {
+                    let q = xf.quad(Rect::new(x0 as f64, y0 as f64, x1 as f64, y1 as f64));
+                    let mut mesh = egui::Mesh::with_texture(tex.id());
+                    for (pos, uv) in q.into_iter().zip([pos2(0.0, 0.0), pos2(1.0, 0.0), pos2(1.0, 1.0), pos2(0.0, 1.0)]) {
+                        mesh.vertices.push(egui::epaint::Vertex { pos, uv, color: Color32::WHITE });
+                    }
+                    mesh.add_triangle(0, 1, 2);
+                    mesh.add_triangle(0, 2, 3);
+                    painter.add(Shape::mesh(mesh));
+                }
+                None if (k.rot - v.rotation).abs() < 1e-9 => {
+                    // Reproject the last frame if it was rendered for a different view.
+                    let old = Xf { rect, zoom: k.zoom, center: Point::new(k.cx, k.cy), rot: xf.rot };
+                    let a = xf.to_screen(old.to_doc(rect.min));
+                    let b = xf.to_screen(old.to_doc(rect.max));
+                    painter.image(tex.id(), egui::Rect::from_min_max(a, b), egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                }
+                None => {}
             }
-            None => {}
         }
     }
     if let Some(look) = grid_look.filter(|_| !grids_in_back) {

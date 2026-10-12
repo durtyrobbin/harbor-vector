@@ -164,9 +164,15 @@ pub fn import_with_report(bytes: &[u8], opts: &ImportOptions) -> Result<ImportRe
     let sink2 = sink.clone();
     let settings = InterpreterSettings {
         warning_sink: Arc::new(move |w| {
-            let msg = match w {
-                InterpreterWarning::UnsupportedFont => "a font could not be read; its text was skipped",
-                InterpreterWarning::ImageDecodeFailure => "an image could not be decoded and was skipped",
+            // A suite host can use PdfCraft's extended interpreter, which also
+            // reports bounded/truncated content. Preserve unknown warnings while
+            // remaining compatible with the standalone interpreter's two variants.
+            let msg = if matches!(w, InterpreterWarning::UnsupportedFont) {
+                "a font could not be read; its text was skipped"
+            } else if matches!(w, InterpreterWarning::ImageDecodeFailure) {
+                "an image could not be decoded and was skipped"
+            } else {
+                "some PDF content could not be interpreted completely"
             };
             if let Ok(mut v) = sink2.lock()
                 && !v.iter().any(|x| x == msg)

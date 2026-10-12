@@ -46,6 +46,7 @@ pub mod print;
 pub mod recovery;
 pub mod render_worker;
 mod scrub;
+pub mod shared_canvas;
 pub mod shortcut_editor;
 pub mod shortcuts;
 pub mod state;
@@ -314,6 +315,9 @@ pub struct Perf {
 }
 
 pub struct VectorcraftApp {
+    /// Optional host-owned view; renderer and tools remain native.
+    pub shared_canvas: Option<artcraft_canvas::Binding>,
+    pub shared_presentation: Option<shared_canvas::Presentation>,
     pub session: Session,
     pub ui: UiState,
     pub views: Vec<View>,
@@ -433,6 +437,8 @@ impl VectorcraftApp {
         let views = session.documents().iter().map(View::of).collect();
         Self {
             session,
+            shared_canvas: None,
+            shared_presentation: None,
             ui: UiState::default(),
             views,
             services,
