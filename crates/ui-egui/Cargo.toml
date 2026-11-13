@@ -9,7 +9,7 @@ description = "VectorCraft egui frontend (menus, panels, tools and canvas); swap
 workspace = true
 
 [dependencies]
-artcraft-canvas = { path = "../../../craft-launcher/crates/canvas" }
+artcraft-canvas = { path = "../../../harbor-studio/crates/canvas" }
 craft-ui = { workspace = true }
 vectorcraft-geom = { workspace = true }
 vectorcraft-color = { workspace = true }

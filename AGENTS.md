@@ -1,3 +1,6 @@
+## Harbor fork override
+This native vector companion is Harbor Vector. Preserve original licenses, contributor credit and internal file-format identities.
+
 # VectorCraft — instructions for agents
 
 VectorCraft is a clean-room, open-source, Rust-native vector illustration app targeting Adobe Illustrator parity (and beyond). It runs natively on macOS, Windows and Linux, and on the web via WASM. Siblings: `../photocraft` (Photoshop-class) and `../pdfcraft` (Acrobat-class); same conventions.
